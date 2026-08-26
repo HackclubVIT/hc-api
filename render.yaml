@@ -1,0 +1,26 @@
+# Render Blueprint — Standalone Backend API Service
+services:
+  - type: web
+    name: hackclub-vit-api
+    runtime: node
+    plan: free
+    branch: main
+    buildCommand: pnpm install && npx prisma generate && npx prisma db push
+    startCommand: node server.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: NPM_CONFIG_PRODUCTION
+        value: "false"
+      - key: NODE_ENV
+        value: production
+      # ---- Secrets: set these in the Render dashboard (sync: false) ----
+      - key: DATABASE_URL   # Neon pooled connection string (?sslmode=require)
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: SMTP_USER      # Gmail address
+        sync: false
+      - key: SMTP_PASS      # Gmail App Password
+        sync: false
