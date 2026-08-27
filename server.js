@@ -1454,8 +1454,18 @@ app.get('/api/health', (req, res) => {
 /* ------------------------------------------------------------------ */
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, '0.0.0.0', () => {
+const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 HackClub Server running on http://localhost:${PORT}`);
+});
+
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`❌ Port ${PORT} is already in use by another running process.`);
+    console.error(`💡 Tip: Run 'Get-Process node | Stop-Process -Force' in PowerShell to clear lingering processes.`);
+    process.exit(1);
+  } else {
+    console.error('❌ Server error:', err);
+  }
 });
 
 process.on('unhandledRejection', (reason) => {
@@ -1463,5 +1473,9 @@ process.on('unhandledRejection', (reason) => {
 });
 
 process.on('uncaughtException', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`❌ Port ${PORT} is already in use by another process.`);
+    process.exit(1);
+  }
   console.warn('[Server Warning] Uncaught Exception:', err?.message || err);
 });
