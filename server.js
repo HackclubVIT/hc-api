@@ -16,7 +16,7 @@ const passwordResetTokens = new Map();
 const resetRequestTimestamps = new Map();
 
 const DB_PATH = path.join(__dirname, 'database.json');
-let memoryDb = { recruitmentApplications: [], projects: [] };
+let memoryDb = { recruitmentApplications: [], projects: [], users: [], allowedEmails: [] };
 try {
   if (fs.existsSync(DB_PATH)) {
     memoryDb = JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
@@ -24,12 +24,10 @@ try {
 } catch (e) {
   console.warn('[DB Notice] Could not parse database.json:', e.message);
 }
-if (!Array.isArray(memoryDb.recruitmentApplications)) {
-  memoryDb.recruitmentApplications = [];
-}
-if (!Array.isArray(memoryDb.projects)) {
-  memoryDb.projects = [];
-}
+if (!Array.isArray(memoryDb.recruitmentApplications)) memoryDb.recruitmentApplications = [];
+if (!Array.isArray(memoryDb.projects)) memoryDb.projects = [];
+if (!Array.isArray(memoryDb.users)) memoryDb.users = [];
+if (!Array.isArray(memoryDb.allowedEmails)) memoryDb.allowedEmails = [];
 
 function saveMemoryDb() {
   try {
@@ -38,6 +36,20 @@ function saveMemoryDb() {
     console.warn('[DB Notice] Could not save database.json:', e.message);
   }
 }
+
+// Database Connection Status Checker
+let isPrismaAvailable = false;
+async function initDb() {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    isPrismaAvailable = true;
+    console.log('🐘 PostgreSQL Database connected.');
+  } catch (e) {
+    isPrismaAvailable = false;
+    console.log('📁 Local Database: Using database.json (Standalone Local Mode)');
+  }
+}
+initDb();
 
 const smtpUser = process.env.SMTP_USER || 'khandelwalprachi42@gmail.com';
 const smtpPass = process.env.SMTP_PASS || '';
@@ -48,8 +60,8 @@ const transporter = nodemailer.createTransport({
   host: 'smtp.gmail.com',
   port: 465,
   secure: true,
-  debug: true,
-  logger: true,
+  debug: false,
+  logger: false,
   auth: {
     user: smtpUser,
     pass: smtpPass
@@ -73,22 +85,28 @@ const COLLECTION_KEYS = [
 ];
 
 async function getCollection(name, fallback = []) {
-  try {
-    const row = await prisma.collection.findUnique({ where: { name } });
-    return row ? row.data : fallback;
-  } catch (err) {
-    return fallback;
+  if (isPrismaAvailable) {
+    try {
+      const row = await prisma.collection.findUnique({ where: { name } });
+      if (row && row.data) return row.data;
+    } catch (err) {}
   }
+  if (memoryDb[name] !== undefined) return memoryDb[name];
+  return fallback;
 }
 
 async function setCollection(name, data) {
-  try {
-    await prisma.collection.upsert({
-      where: { name },
-      update: { data },
-      create: { name, data }
-    });
-  } catch (err) {}
+  if (isPrismaAvailable) {
+    try {
+      await prisma.collection.upsert({
+        where: { name },
+        update: { data },
+        create: { name, data }
+      });
+    } catch (err) {}
+  }
+  memoryDb[name] = data;
+  saveMemoryDb();
   return data;
 }
 
@@ -108,6 +126,8 @@ function mapUser(u) {
     department: u.department ?? null,
     status: u.status ?? 'Active',
     isReviewer: !!u.isReviewer,
+    isRecruitmentAdmin: !!u.isRecruitmentAdmin,
+    permissions: Array.isArray(u.permissions) ? u.permissions : [],
     projectsUploaded: Number(u.projectsUploaded ?? 0),
     averageRating: String(u.averageRating ?? '0.0'),
     badges: u.badges ?? [],
@@ -180,11 +200,14 @@ function validateEmail(email) {
 async function findUserByEmail(email) {
   if (!email) return null;
   try {
-    return await prisma.user.findUnique({ where: { email } });
-  } catch (err) {
-    console.warn(`[DB Notice] Database query for ${email}: ${err.message}`);
-    return null;
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (user) return user;
+  } catch (err) {}
+  if (Array.isArray(memoryDb.users)) {
+    const memUser = memoryDb.users.find(u => u.email && u.email.toLowerCase() === email.toLowerCase());
+    if (memUser) return memUser;
   }
+  return null;
 }
 
 // Never send the password column to the client.
@@ -197,18 +220,23 @@ function stripPassword(user) {
 const stripPasswords = (users) => users.map(stripPassword);
 
 async function isEmailAllowed(email) {
+  if (!email) return false;
+  const lower = email.toLowerCase();
   // Demo accounts and test admin are always permitted.
-  if (email === 'admin@vitstudent.ac.in' || email === 'user@vitstudent.ac.in' || email === 'khandelwalprachi42@gmail.com') {
+  if (lower === 'admin@vitstudent.ac.in' || lower === 'user@vitstudent.ac.in' || lower === 'khandelwalprachi42@gmail.com') {
     return true;
   }
   try {
     const entry = await prisma.allowedEmail.findUnique({ where: { email } });
-    return !!entry;
-  } catch (err) {
-    console.warn(`[DB Notice] Allowlist query for ${email}: ${err.message}`);
-    // If DB is offline, permit valid student emails
-    return validateEmail(email);
+    if (entry) return true;
+  } catch (err) {}
+
+  if (Array.isArray(memoryDb.allowedEmails)) {
+    if (memoryDb.allowedEmails.some(e => typeof e === 'string' ? e.toLowerCase() === lower : e.email?.toLowerCase() === lower)) {
+      return true;
+    }
   }
+  return validateEmail(email);
 }
 
 /* ------------------------------------------------------------------ */
@@ -227,8 +255,24 @@ function authenticateToken(req, res, next) {
 }
 
 function requireAdmin(req, res, next) {
-  if (req.user?.role !== 'admin') {
+  const role = (req.user?.role || '').toLowerCase();
+  if (role !== 'admin' && !ADMIN_TIER_ROLES.includes(role)) {
     return res.status(403).json({ error: 'Forbidden: Admin access only.' });
+  }
+  next();
+}
+
+function requireRecruitmentAccess(req, res, next) {
+  const userRole = (req.user?.role || '').toLowerCase();
+  const isOverallAdmin = userRole === 'admin' || ADMIN_TIER_ROLES.includes(userRole);
+  const hasRecruitmentPermission = req.user?.isRecruitmentAdmin === true || 
+    (Array.isArray(req.user?.permissions) && req.user.permissions.includes('recruitment-admin')) ||
+    userRole === 'recruitment admin';
+
+  if (!isOverallAdmin && !hasRecruitmentPermission) {
+    return res.status(403).json({ 
+      error: 'Forbidden: Recruitment monitoring privileges required. Only overall admins and members granted recruitment-admin access can view this.' 
+    });
   }
   next();
 }
@@ -359,8 +403,21 @@ app.post('/api/auth/login', async (req, res) => {
 
   const resolvedRole = resolveRole(email, dbUser, role);
   const name = resolveDisplayName(email, dbUser);
-  const token = jwt.sign({ name, email, role: resolvedRole }, JWT_SECRET, { expiresIn: '7d' });
-  return res.json({ token, role: resolvedRole, user: { name, email, role: resolvedRole } });
+  const isOverallAdmin = resolvedRole === 'admin' || ADMIN_TIER_ROLES.includes((dbUser?.role || '').toLowerCase());
+  const isRecruitmentAdmin = isOverallAdmin || !!dbUser?.isRecruitmentAdmin || 
+    (Array.isArray(dbUser?.permissions) && dbUser.permissions.includes('recruitment-admin')) ||
+    (dbUser?.role || '').toLowerCase() === 'recruitment admin';
+  const permissions = Array.isArray(dbUser?.permissions) ? dbUser.permissions : (isRecruitmentAdmin ? ['recruitment-admin'] : []);
+
+  const tokenPayload = {
+    name,
+    email,
+    role: resolvedRole,
+    isRecruitmentAdmin,
+    permissions
+  };
+  const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '7d' });
+  return res.json({ token, role: resolvedRole, user: tokenPayload });
 });
 
 // Signup — gated by the allowlist + email format.
@@ -1108,24 +1165,116 @@ app.post('/api/recruitment/apply', async (req, res) => {
 
 const TEST_RECRUITMENT_REGS = new Set(['24BPS1029', '24BYB1097', '24BCE9999']);
 
-app.get('/api/recruitment/applications', authenticateToken, requireAdmin, async (req, res) => {
+// Helper to auto-allowlist and initialize member record ONLY when selected/accepted
+async function handleApplicantSelected(app, adminName) {
+  if (!app || !app.email) return;
+  const email = String(app.email).trim().toLowerCase();
+
+  // 1. Add to AllowedEmail so candidate can sign up
   try {
-    const dbApps = await prisma.recruitmentApplication.findMany({ orderBy: { id: 'desc' } });
-    const cleanApps = dbApps.filter(a => !TEST_RECRUITMENT_REGS.has(a.registerNumber));
-    return res.json(cleanApps);
+    const existing = await prisma.allowedEmail.findUnique({ where: { email } });
+    if (!existing) {
+      await prisma.allowedEmail.create({
+        data: {
+          email,
+          addedBy: adminName || 'Recruitment System'
+        }
+      });
+      console.log(`[Recruitment] Candidate ${email} added to AllowedEmail.`);
+    }
   } catch (err) {
-    console.warn(`[DB Notice] Applications fetch error: ${err.message}`);
-    const memApps = (memoryDb.recruitmentApplications || []).filter(a => !TEST_RECRUITMENT_REGS.has(a.registerNumber));
-    return res.json(memApps);
+    console.warn(`[Recruitment] AllowedEmail auto-insert notice: ${err.message}`);
+  }
+
+  // 2. Add or activate user record with applicant's department
+  try {
+    const existingUser = await prisma.user.findUnique({ where: { email } });
+    if (!existingUser) {
+      await prisma.user.create({
+        data: mapUser({
+          id: Date.now(),
+          name: app.name,
+          email,
+          registerNumber: app.registerNumber,
+          department: app.firstPreference || app.domain || 'Operations',
+          role: 'Member',
+          status: 'Active',
+          phoneNumber: app.phoneNumber || null,
+          github: app.github || null,
+          portfolio: app.portfolio || null,
+          joined: new Date().toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
+          badges: ['New Maker', 'Recruitment 2026'],
+          contributionScore: 10,
+          eventScore: 5,
+          totalScore: 7
+        })
+      });
+      console.log(`[Recruitment] User record created for selected candidate: ${email}`);
+    }
+  } catch (err) {
+    console.warn(`[Recruitment] User auto-create notice: ${err.message}`);
+  }
+}
+
+app.get('/api/recruitment/stats', authenticateToken, requireRecruitmentAccess, async (req, res) => {
+  try {
+    let apps = [];
+    try {
+      apps = await prisma.recruitmentApplication.findMany();
+    } catch (dbErr) {}
+    if (!apps || apps.length === 0) {
+      apps = memoryDb.recruitmentApplications || [];
+    }
+    const cleanApps = apps.filter(a => !TEST_RECRUITMENT_REGS.has(a.registerNumber));
+    
+    const stats = {
+      total: cleanApps.length,
+      screening: cleanApps.filter(a => a.status === 'screening' || a.status === 'Pending').length,
+      technical: cleanApps.filter(a => a.status === 'technical' || a.status === 'Under Review').length,
+      interview: cleanApps.filter(a => a.status === 'interview' || a.status === 'Shortlisted').length,
+      selected: cleanApps.filter(a => a.status === 'selected' || a.status === 'Accepted').length,
+      rejected: cleanApps.filter(a => a.status === 'rejected' || a.status === 'Rejected').length,
+      departments: {},
+      years: {}
+    };
+
+    cleanApps.forEach(a => {
+      const dept = a.firstPreference || a.domain || 'Operations';
+      stats.departments[dept] = (stats.departments[dept] || 0) + 1;
+      const yr = a.yearOfStudy || '1st';
+      stats.years[yr] = (stats.years[yr] || 0) + 1;
+    });
+
+    res.json(stats);
+  } catch (err) {
+    console.warn(`[Recruitment Stats Error] ${err.message}`);
+    res.status(500).json({ error: 'Failed to calculate recruitment stats.' });
   }
 });
 
-app.put('/api/recruitment/applications/:id/status', authenticateToken, requireAdmin, async (req, res) => {
+app.get('/api/recruitment/applications', authenticateToken, requireRecruitmentAccess, async (req, res) => {
+  let apps = [];
+  if (isPrismaAvailable) {
+    try {
+      apps = await prisma.recruitmentApplication.findMany({ orderBy: { id: 'desc' } });
+    } catch (err) {}
+  }
+  if (!apps || apps.length === 0) {
+    apps = memoryDb.recruitmentApplications || [];
+  }
+  const cleanApps = apps.filter(a => !TEST_RECRUITMENT_REGS.has(a.registerNumber));
+  return res.json(cleanApps);
+});
+
+app.put('/api/recruitment/applications/:id/status', authenticateToken, requireRecruitmentAccess, async (req, res) => {
   const { id } = req.params;
   const { status } = req.body;
-  const ALLOWED_STATUSES = ['Pending', 'Under Review', 'Shortlisted', 'Accepted', 'Rejected'];
-  if (!ALLOWED_STATUSES.includes(status)) {
-    return res.status(400).json({ error: 'Invalid status update.' });
+  const VALID_STATUSES = [
+    'Pending', 'Under Review', 'Shortlisted', 'Accepted', 'Rejected',
+    'screening', 'technical', 'interview', 'selected', 'rejected'
+  ];
+  if (!VALID_STATUSES.includes(status)) {
+    return res.status(400).json({ error: 'Invalid status update value.' });
   }
 
   let application = null;
@@ -1133,6 +1282,7 @@ app.put('/api/recruitment/applications/:id/status', authenticateToken, requireAd
     application = await prisma.recruitmentApplication.findUnique({ where: { id: toBig(id) } });
     if (application) {
       await prisma.recruitmentApplication.update({ where: { id: application.id }, data: { status } });
+      application.status = status;
     }
   } catch (err) {
     console.warn(`[DB Notice] Status update error: ${err.message}`);
@@ -1142,6 +1292,14 @@ app.put('/api/recruitment/applications/:id/status', authenticateToken, requireAd
   if (memApp) {
     memApp.status = status;
     saveMemoryDb();
+    if (!application) application = memApp;
+  }
+
+  // ONLY add to allowlist & activate member record if candidate reached selected/Accepted
+  if (status === 'selected' || status === 'Accepted') {
+    if (application) {
+      await handleApplicantSelected(application, req.user.name);
+    }
   }
 
   let applications = [];
@@ -1151,10 +1309,52 @@ app.put('/api/recruitment/applications/:id/status', authenticateToken, requireAd
   if (!applications || applications.length === 0) {
     applications = memoryDb.recruitmentApplications;
   }
-  res.json({ success: true, applications });
+  res.json({ success: true, status, applications });
 });
 
-app.delete('/api/recruitment/applications/:id', authenticateToken, requireAdmin, async (req, res) => {
+app.post('/api/recruitment/applications/batch-status', authenticateToken, requireRecruitmentAccess, async (req, res) => {
+  const { ids, status } = req.body;
+  if (!Array.isArray(ids) || ids.length === 0 || !status) {
+    return res.status(400).json({ error: 'Applicant IDs array and target status are required.' });
+  }
+
+  const bigIds = ids.map(id => toBig(id));
+  let updatedApps = [];
+
+  try {
+    await prisma.recruitmentApplication.updateMany({
+      where: { id: { in: bigIds } },
+      data: { status }
+    });
+    updatedApps = await prisma.recruitmentApplication.findMany({
+      where: { id: { in: bigIds } }
+    });
+  } catch (err) {
+    console.warn(`[DB Notice] Batch status update error: ${err.message}`);
+  }
+
+  // Update memoryDb
+  if (Array.isArray(memoryDb.recruitmentApplications)) {
+    memoryDb.recruitmentApplications.forEach(a => {
+      if (ids.some(id => String(id) === String(a.id))) {
+        a.status = status;
+      }
+    });
+    saveMemoryDb();
+  }
+
+  // ONLY auto-allowlist if status is selected/Accepted
+  if (status === 'selected' || status === 'Accepted') {
+    for (const app of updatedApps) {
+      await handleApplicantSelected(app, req.user.name);
+    }
+  }
+
+  const applications = await prisma.recruitmentApplication.findMany({ orderBy: { id: 'desc' } }).catch(() => memoryDb.recruitmentApplications || []);
+  res.json({ success: true, count: ids.length, status, applications });
+});
+
+app.delete('/api/recruitment/applications/:id', authenticateToken, requireRecruitmentAccess, async (req, res) => {
   const { id } = req.params;
   memoryDb.recruitmentApplications = (memoryDb.recruitmentApplications || []).filter(a => String(a.id) !== String(id));
   saveMemoryDb();
@@ -1177,6 +1377,29 @@ app.delete('/api/recruitment/applications/all', authenticateToken, requireAdmin,
     console.warn('[DB Notice] Delete all applications error:', err.message);
   }
   res.json({ success: true, message: 'All recruitment applications cleared.' });
+});
+
+// Admin toggle recruitment permission for a member
+app.put('/api/users/:id/recruitment-permission', authenticateToken, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { isRecruitmentAdmin } = req.body;
+  const user = await prisma.user.findUnique({ where: { id: toBig(id) } });
+  if (!user) return res.status(404).json({ error: 'User not found.' });
+
+  const permissions = Array.isArray(user.permissions) ? [...user.permissions] : [];
+  const nextPermissions = isRecruitmentAdmin 
+    ? Array.from(new Set([...permissions, 'recruitment-admin']))
+    : permissions.filter(p => p !== 'recruitment-admin');
+
+  const updated = await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      isRecruitmentAdmin: !!isRecruitmentAdmin,
+      permissions: nextPermissions
+    }
+  });
+
+  res.json({ success: true, user: stripPassword(updated) });
 });
 
 /* ================================================================== */

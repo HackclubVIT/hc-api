@@ -36,6 +36,8 @@ model User {
   github             String?
   portfolio          String?
   avatar             String?
+  isRecruitmentAdmin Boolean @default(false)
+  permissions        Json    @default("[]")
 
   @@map("users")
 }
