@@ -5,13 +5,16 @@ import { getISTDateBounds } from "../lib/timezone.js";
 import { z } from "zod";
 
 const panelSchema = z.object({
-  name: z.string().min(2),
-  description: z.string().optional(),
+  name: z.string().trim().min(1, "Panel name is required"),
+  description: z.string().trim().nullable().optional(),
+  status: z.enum(["ACTIVE", "INACTIVE"]).optional()
 });
 
-const panelUpdateSchema = panelSchema.extend({
-  id: z.number().int().positive(),
-  status: z.enum(["ACTIVE", "INACTIVE"])
+const panelUpdateSchema = z.object({
+  id: z.union([z.number().int().positive(), z.string().transform(v => parseInt(v, 10))]),
+  name: z.string().trim().min(1).optional(),
+  description: z.string().trim().nullable().optional(),
+  status: z.enum(["ACTIVE", "INACTIVE"]).optional()
 });
 
 export const getPanels = async (req, res) => {
@@ -113,9 +116,10 @@ export const deletePanel = async (req, res) => {
       return res.status(403).json({ error: "Forbidden" });
     }
 
-    const { id } = req.body;
-    if (!id) {
-      return res.status(400).json({ error: "Missing panel ID" });
+    const rawId = req.body?.id || req.params?.id;
+    const id = parseInt(rawId, 10);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: "Missing or invalid panel ID" });
     }
 
     const panelRelations = await prisma.recruitmentPanel.findUnique({
@@ -160,12 +164,18 @@ export const addPanelMember = async (req, res) => {
       return res.status(403).json({ error: "Forbidden" });
     }
 
-    const { panel_id, user_id } = req.body;
-    if (!panel_id || !user_id) {
-      return res.status(400).json({ error: "Missing required fields" });
+    const panel_id = parseInt(req.body?.panel_id, 10);
+    const rawUserId = req.body?.user_id;
+    if (isNaN(panel_id) || !rawUserId) {
+      return res.status(400).json({ error: "Missing required panel_id or user_id" });
     }
 
-    const userId = BigInt(user_id);
+    let userId;
+    try {
+      userId = BigInt(rawUserId);
+    } catch (e) {
+      return res.status(400).json({ error: "Invalid user ID" });
+    }
 
     const panel = await prisma.recruitmentPanel.findUnique({ where: { id: panel_id } });
     if (!panel) {
@@ -222,12 +232,18 @@ export const removePanelMember = async (req, res) => {
       return res.status(403).json({ error: "Forbidden" });
     }
 
-    const { panel_id, user_id } = req.body;
-    if (!panel_id || !user_id) {
-      return res.status(400).json({ error: "Missing required fields" });
+    const panel_id = parseInt(req.body?.panel_id, 10);
+    const rawUserId = req.body?.user_id;
+    if (isNaN(panel_id) || !rawUserId) {
+      return res.status(400).json({ error: "Missing or invalid required fields" });
     }
 
-    const userId = BigInt(user_id);
+    let userId;
+    try {
+      userId = BigInt(rawUserId);
+    } catch (e) {
+      return res.status(400).json({ error: "Invalid user ID" });
+    }
 
     const member = await prisma.recruitmentPanelMember.findFirst({
       where: { panel_id, user_id: userId, active: true }

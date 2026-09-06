@@ -2,7 +2,10 @@ import prisma from '../../../prismaClient.js';
 
 export async function logAudit(user_id, action, entity, entity_id) {
   try {
-    const parsedUserId = user_id ? BigInt(user_id) : null;
+    let parsedUserId = null;
+    if (user_id && /^\d+$/.test(String(user_id))) {
+      parsedUserId = BigInt(user_id);
+    }
     await prisma.recruitmentAuditLog.create({
       data: {
         user_id: parsedUserId,

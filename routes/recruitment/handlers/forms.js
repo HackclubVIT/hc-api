@@ -6,8 +6,8 @@ import { z } from "zod";
 const VALID_QUESTION_TYPES = ["TEXT", "PARAGRAPH", "RADIO", "DROPDOWN", "CHECKBOX"];
 
 const questionSchema = z.object({
-  question: z.string().min(2),
-  type: z.enum(["TEXT", "PARAGRAPH", "RADIO", "DROPDOWN", "CHECKBOX"]),
+  question: z.string().trim().min(1, "Question is required"),
+  type: z.string().transform(v => v.toUpperCase()).pipe(z.enum(["TEXT", "PARAGRAPH", "RADIO", "DROPDOWN", "CHECKBOX"])),
   required: z.boolean().optional(),
   options: z.array(z.string()).optional()
 }).refine(data => {
@@ -18,13 +18,13 @@ const questionSchema = z.object({
 }, { message: "Options are required for this question type", path: ["options"] });
 
 const createFormSchema = z.object({
-  title: z.string().min(2),
-  description: z.string().optional()
+  title: z.string().trim().min(1, "Title is required"),
+  description: z.string().trim().nullable().optional()
 });
 
 const updateFormSchema = z.object({
-  title: z.string().min(2).optional(),
-  description: z.string().optional(),
+  title: z.string().trim().min(1).optional(),
+  description: z.string().trim().nullable().optional(),
   status: z.enum(["DRAFT", "PUBLISHED", "CLOSED"]).optional()
 });
 
@@ -96,6 +96,9 @@ export const createForm = async (req, res) => {
 export const getFormById = async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: "Invalid form ID" });
+    }
 
     const form = await prisma.recruitmentForm.findUnique({
       where: { id },
@@ -128,6 +131,9 @@ export const updateForm = async (req, res) => {
     }
     
     const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: "Invalid form ID" });
+    }
     
     const parsed = updateFormSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -183,6 +189,9 @@ export const deleteForm = async (req, res) => {
     }
     
     const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: "Invalid form ID" });
+    }
 
     const form = await prisma.recruitmentForm.findUnique({ where: { id } });
     if (!form) return res.status(404).json({ error: "Form not found" });
@@ -213,6 +222,9 @@ export const createQuestion = async (req, res) => {
     }
     
     const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: "Invalid form ID" });
+    }
     
     const parsed = questionSchema.safeParse(req.body);
     if (!parsed.success) {
