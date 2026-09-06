@@ -7,7 +7,9 @@ import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import cookieParser from 'cookie-parser';
 import prisma from './prismaClient.js';
+import recruitmentRouter from './routes/recruitment/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -71,8 +73,36 @@ const transporter = nodemailer.createTransport({
 const JWT_SECRET = process.env.JWT_SECRET || 'HACKCLUB_VIT_SECRET_SESSION_TOKEN_KEY_2026';
 
 const app = express();
-app.use(cors());
+
+const defaultAllowedOrigins = [
+  'http://localhost:3000',
+  'http://localhost:5173',
+  'https://recruitment.hackclubvit.co',
+  'https://hackclubvit.co',
+  'https://recruitment-platform.hackclubvit.co'
+];
+const allowedOrigins = process.env.ALLOWED_ORIGIN
+  ? process.env.ALLOWED_ORIGIN.split(',').map(s => s.trim())
+  : defaultAllowedOrigins;
+if (process.env.FRONTEND_URL && !allowedOrigins.includes(process.env.FRONTEND_URL)) {
+  allowedOrigins.push(process.env.FRONTEND_URL);
+}
+
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.includes(origin) || process.env.NODE_ENV !== 'production') {
+      callback(null, true);
+    } else {
+      callback(null, true);
+    }
+  },
+  credentials: true,
+}));
+app.use(cookieParser());
 app.use(express.json());
+
+// Recruitment Platform API Router
+app.use('/api', recruitmentRouter);
 
 /* ------------------------------------------------------------------ */
 /* Collection (key/value) helpers                                      */

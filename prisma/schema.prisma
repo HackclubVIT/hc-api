@@ -1,6 +1,3 @@
-// HackClub VIT Chennai — Neon PostgreSQL schema (Prisma)
-// Run `npx prisma db push` after setting DATABASE_URL in server/.env
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -10,8 +7,10 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// Registered members / admins. Login (password + OTP) requires the email to
-// already exist here. New accounts are created via signup (gated by AllowedEmail).
+// ==========================================
+// HC MAIN MODELS (DO NOT MODIFY)
+// ==========================================
+
 model User {
   id                 BigInt  @id
   name               String
@@ -38,6 +37,14 @@ model User {
   avatar             String?
   isRecruitmentAdmin Boolean @default(false)
   permissions        Json    @default("[]")
+
+  // Relations to recruitment models
+  recruitmentRole    RecruitmentRoleAssignment?
+  recruitmentPanels  RecruitmentPanelMember[]
+  recruitmentNotifs  RecruitmentNotification[]
+  recruitmentAudit   RecruitmentAuditLog[]
+  recruitmentNotes   RecruitmentNote[]
+  scheduledInterviews RecruitmentInterview[] @relation("RecruiterInterviews")
 
   @@map("users")
 }
@@ -80,14 +87,12 @@ model ProjectRating {
   @@map("project_ratings")
 }
 
-// Recruitment form submissions. Unique email + register number guarantee one
-// application per person.
 model RecruitmentApplication {
   id                         BigInt  @id
   recruitmentId              String  @default("recruitment-2026")
   name                       String
-  registerNumber             String  @unique
-  email                      String  @unique
+  registerNumber             String
+  email                      String
   phoneNumber                String?
   domain                     String?
   firstPreference            String?
@@ -112,10 +117,23 @@ model RecruitmentApplication {
   status                     String  @default("Pending")
   appliedDate                String?
 
+  decided_by         BigInt?
+  decided_at                 DateTime?
+  decision_reason            String?
+
+  // Recruitment relations
+  interviews                 RecruitmentInterview[]
+  formSubmission             RecruitmentFormSubmission?
+  notes                      RecruitmentNote[]
+
+  @@index([recruitmentId])
+  @@index([status])
+  @@index([domain])
+  @@unique([recruitmentId, email])
+  @@unique([recruitmentId, registerNumber])
   @@map("recruitment_applications")
 }
 
-// Admin-managed allowlist. Only emails present here may create an account.
 model AllowedEmail {
   id        Int      @id @default(autoincrement())
   email     String   @unique
@@ -125,11 +143,222 @@ model AllowedEmail {
   @@map("allowed_emails")
 }
 
-// Key/value store for the bulk collections the dashboard syncs wholesale
-// (announcements, uploads, events, feedbacks, winners, profile, etc.).
 model Collection {
   name String @id
   data Json
 
   @@map("collections")
+}
+
+// ==========================================
+// RECRUITMENT SPECIFIC MODELS
+// ==========================================
+
+model RecruitmentRoleAssignment {
+  id          Int      @id @default(autoincrement())
+  user_id     BigInt   @unique
+  role        String   @default("NONE") // ADMIN, RECRUITER, PANEL_MEMBER, NONE
+  departments String[] // For RECRUITER role
+  active      Boolean  @default(true) // For disabling user access
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  user        User     @relation(fields: [user_id], references: [id])
+
+  @@index([role])
+  @@map("recruitment_role_assignments")
+}
+
+model RecruitmentForm {
+  id           Int      @id @default(autoincrement())
+  title        String
+  description  String?
+  status       String   @default("DRAFT") // DRAFT, PUBLISHED, CLOSED
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+  published_at DateTime?
+  closed_at    DateTime?
+
+  questions    RecruitmentFormQuestion[]
+  submissions  RecruitmentFormSubmission[]
+
+  @@map("recruitment_forms")
+}
+
+model RecruitmentFormQuestion {
+  id       Int      @id @default(autoincrement())
+  form_id  Int
+  question String
+  type     String
+  required Boolean  @default(true)
+  options  String[] // Using String[] for options
+
+  form     RecruitmentForm @relation(fields: [form_id], references: [id])
+  answers  RecruitmentFormAnswer[]
+
+  @@map("recruitment_form_questions")
+}
+
+model RecruitmentFormSubmission {
+  id              Int      @id @default(autoincrement())
+  application_id  BigInt   @unique
+  form_id         Int
+  submitted_at    DateTime @default(now())
+
+  application     RecruitmentApplication @relation(fields: [application_id], references: [id])
+  form            RecruitmentForm        @relation(fields: [form_id], references: [id])
+  answers         RecruitmentFormAnswer[]
+
+  @@map("recruitment_form_submissions")
+}
+
+model RecruitmentFormAnswer {
+  id              Int      @id @default(autoincrement())
+  submission_id   Int
+  question_id     Int
+  answer          String
+  
+  submission      RecruitmentFormSubmission @relation(fields: [submission_id], references: [id])
+  question        RecruitmentFormQuestion   @relation(fields: [question_id], references: [id])
+
+  @@map("recruitment_form_answers")
+}
+
+model RecruitmentNote {
+  id              Int      @id @default(autoincrement())
+  application_id  BigInt
+  author_id       BigInt
+  content         String
+  created_at      DateTime @default(now())
+
+  application     RecruitmentApplication @relation(fields: [application_id], references: [id])
+  author          User                   @relation(fields: [author_id], references: [id])
+
+  @@map("recruitment_notes")
+}
+
+model RecruitmentPanel {
+  id          Int      @id @default(autoincrement())
+  name        String
+  description String?
+  status      String   @default("ACTIVE")
+  created_at  DateTime @default(now())
+
+  members     RecruitmentPanelMember[]
+  interviews  RecruitmentInterview[]
+
+  @@map("recruitment_panels")
+}
+
+model RecruitmentPanelMember {
+  id       Int    @id @default(autoincrement())
+  panel_id Int
+  user_id  BigInt
+  active   Boolean @default(true)
+
+  panel    RecruitmentPanel @relation(fields: [panel_id], references: [id])
+  user     User             @relation(fields: [user_id], references: [id])
+  
+  feedback             RecruitmentFeedback[]
+  assigned_interviews  RecruitmentInterview[] @relation("InterviewAssignments")
+
+  @@map("recruitment_panel_members")
+}
+
+model RecruitmentInterview {
+  id             Int      @id @default(autoincrement())
+  application_id BigInt
+  panel_id       Int
+  recruiter_id   BigInt?
+  round          Int      @default(1)
+  date           DateTime
+  start_time     DateTime
+  end_time       DateTime
+  meeting_link   String?
+  status         String   @default("SCHEDULED")
+
+  application    RecruitmentApplication @relation(fields: [application_id], references: [id])
+  panel          RecruitmentPanel       @relation(fields: [panel_id], references: [id])
+  recruiter      User?                  @relation("RecruiterInterviews", fields: [recruiter_id], references: [id])
+  
+  feedback         RecruitmentFeedback[]
+  assigned_members RecruitmentPanelMember[] @relation("InterviewAssignments")
+
+  @@index([application_id])
+  @@index([date])
+  @@map("recruitment_interviews")
+}
+
+model RecruitmentFeedback {
+  id                   Int      @id @default(autoincrement())
+  interview_id         Int
+  panel_member_id      Int
+  technical_score      Int
+  communication_score  Int
+  problem_solving_score Int
+  confidence_score     Int
+  teamwork_score       Int
+  comments             String?
+  decision             String
+
+  interview            RecruitmentInterview   @relation(fields: [interview_id], references: [id])
+  panel_member         RecruitmentPanelMember @relation(fields: [panel_member_id], references: [id])
+
+  @@index([interview_id])
+  @@unique([interview_id, panel_member_id])
+  @@map("recruitment_feedback")
+}
+
+model RecruitmentNotification {
+  id         Int      @id @default(autoincrement())
+  user_id    BigInt
+  title      String
+  message    String
+  read       Boolean  @default(false)
+  created_at DateTime @default(now())
+
+  user       User     @relation(fields: [user_id], references: [id])
+
+  @@index([user_id])
+  @@map("recruitment_notifications")
+}
+
+model RecruitmentAuditLog {
+  id         Int      @id @default(autoincrement())
+  user_id    BigInt?
+  action     String
+  entity     String
+  entity_id  String?
+  timestamp  DateTime @default(now())
+
+  user       User?    @relation(fields: [user_id], references: [id])
+
+  @@index([timestamp])
+  @@map("recruitment_audit_logs")
+}
+
+model RecruitmentEmailLog {
+  id              Int      @id @default(autoincrement())
+  event_type      String
+  entity_id       String?
+  recipient_count Int
+  status          String
+  error_message   String?
+  timestamp       DateTime @default(now())
+
+  @@index([timestamp])
+  @@map("recruitment_email_logs")
+}
+
+model RecruitmentAnnouncement {
+  id            Int      @id @default(autoincrement())
+  department    String
+  target_status String   @default("SHORTLISTED")
+  title         String
+  message       String
+  created_by    String?
+  created_at    DateTime @default(now())
+
+  @@index([department])
+  @@map("recruitment_announcements")
 }
