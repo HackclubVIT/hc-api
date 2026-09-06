@@ -28,7 +28,13 @@ export async function verifyToken(token = "") {
 
 export async function getSession(req) {
   if (!req) return null;
-  const token = req.cookies?.session;
+  let token = req.cookies?.session;
+  if (!token && req.headers?.authorization) {
+    const authHeader = req.headers.authorization;
+    if (authHeader.startsWith("Bearer ")) {
+      token = authHeader.substring(7).trim();
+    }
+  }
   if (!token) return null;
   const payload = await verifyToken(token);
   if (!payload || !payload.id) return null;

@@ -24,16 +24,18 @@ export const login = async (req, res) => {
           departments: ["Projects", "Operations", "Technical", "Finance", "Research and Development", "Design & Social Media", "*"],
         });
 
+        const isProd = process.env.NODE_ENV === "production";
         res.cookie("session", token, {
           httpOnly: true,
-          secure: false,
-          sameSite: "lax",
+          secure: isProd,
+          sameSite: isProd ? "none" : "lax",
           maxAge: 7 * 24 * 60 * 60 * 1000,
           path: "/",
         });
 
         return res.status(200).json({
           message: "Dev login successful",
+          token,
           user: { id: "dev-mock-id", email, role: devUser.role }
         });
       } else if (devUser) {
@@ -168,16 +170,18 @@ export const login = async (req, res) => {
       departments: departments,
     });
 
+    const isProd = process.env.NODE_ENV === "production";
     res.cookie("session", token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
+      secure: isProd,
+      sameSite: isProd ? "none" : "lax",
       maxAge: 7 * 24 * 60 * 60 * 1000,
       path: "/",
     });
 
     return res.status(200).json({ 
       message: "Logged in successfully",
+      token,
       user: { id: user.id.toString(), email: user.email, role: recruitmentRole }
     });
   } catch (error) {

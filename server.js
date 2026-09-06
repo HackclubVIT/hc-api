@@ -79,24 +79,31 @@ const defaultAllowedOrigins = [
   'http://localhost:5173',
   'https://recruitment.hackclubvit.co',
   'https://hackclubvit.co',
-  'https://recruitment-platform.hackclubvit.co'
+  'https://recruitment-platform.hackclubvit.co',
+  'https://hackclubvit.github.io',
 ];
 const allowedOrigins = process.env.ALLOWED_ORIGIN
   ? process.env.ALLOWED_ORIGIN.split(',').map(s => s.trim())
   : defaultAllowedOrigins;
-if (process.env.FRONTEND_URL && !allowedOrigins.includes(process.env.FRONTEND_URL)) {
-  allowedOrigins.push(process.env.FRONTEND_URL);
+
+if (process.env.FRONTEND_URL) {
+  const cleanFrontend = process.env.FRONTEND_URL.replace(/\/$/, '');
+  if (!allowedOrigins.includes(cleanFrontend)) {
+    allowedOrigins.push(cleanFrontend);
+  }
 }
 
 app.use(cors({
   origin: function (origin, callback) {
-    if (!origin || allowedOrigins.includes(origin) || process.env.NODE_ENV !== 'production') {
+    if (!origin || allowedOrigins.includes(origin) || (origin && origin.endsWith('.github.io')) || process.env.NODE_ENV !== 'production') {
       callback(null, true);
     } else {
       callback(null, true);
     }
   },
   credentials: true,
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
 }));
 app.use(cookieParser());
 app.use(express.json());
