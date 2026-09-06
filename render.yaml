@@ -10,7 +10,7 @@ services:
     healthCheckPath: /api/health
     envVars:
       - key: NODE_VERSION
-        value: "20"
+        value: "22"
       - key: NPM_CONFIG_PRODUCTION
         value: "false"
       - key: NODE_ENV
