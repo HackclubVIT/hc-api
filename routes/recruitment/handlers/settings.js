@@ -7,13 +7,13 @@ import nodemailer from "nodemailer";
 import { z } from "zod";
 
 const emailSettingsSchema = z.object({
-  host: z.string().min(1),
-  port: z.number().int().positive(),
+  host: z.string().trim().min(1, "SMTP host is required"),
+  port: z.coerce.number().int().positive("Invalid port number"),
   secure: z.boolean(),
-  user: z.string().email(),
+  user: z.string().trim().min(1, "Username is required"),
   pass: z.string().optional(),
-  fromEmail: z.string().email(),
-  fromName: z.string().min(1)
+  fromEmail: z.string().trim().email("Invalid sender email").optional().or(z.literal('')),
+  fromName: z.string().trim().min(1, "Sender name is required")
 });
 
 export const getEmailSettings = async (req, res) => {
@@ -49,7 +49,10 @@ export const updateEmailSettings = async (req, res) => {
 
     const parsed = emailSettingsSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: "Invalid payload data", details: parsed.error.format() });
+      const issue = parsed.error.issues?.[0];
+      const field = issue?.path?.join('.') || 'Form';
+      const errMsg = issue?.message ? `${field}: ${issue.message}` : "Invalid payload data";
+      return res.status(400).json({ error: errMsg, details: parsed.error.format() });
     }
 
     const newSettings = parsed.data;
@@ -68,13 +71,15 @@ export const updateEmailSettings = async (req, res) => {
        finalPass = encryptPassword(finalPass);
     }
 
+    const effectiveFromEmail = newSettings.fromEmail || (newSettings.user.includes('@') ? newSettings.user : 'recruitment@hackclubvit.co');
+
     const updatedData = {
       host: newSettings.host,
       port: newSettings.port,
       secure: newSettings.secure,
       user: newSettings.user,
       pass: finalPass,
-      fromEmail: newSettings.fromEmail,
+      fromEmail: effectiveFromEmail,
       fromName: newSettings.fromName
     };
 
@@ -96,14 +101,14 @@ export const updateEmailSettings = async (req, res) => {
 };
 
 const emailTestSchema = z.object({
-  host: z.string().min(1),
-  port: z.number().int().positive(),
+  host: z.string().trim().min(1, "SMTP host is required"),
+  port: z.coerce.number().int().positive("Invalid port number"),
   secure: z.boolean(),
-  user: z.string().email(),
+  user: z.string().trim().min(1, "Username is required"),
   pass: z.string().optional(),
-  fromEmail: z.string().email(),
-  fromName: z.string().min(1),
-  testRecipient: z.string().email()
+  fromEmail: z.string().trim().email("Invalid sender email").optional().or(z.literal('')),
+  fromName: z.string().trim().min(1, "Sender name is required"),
+  testRecipient: z.string().trim().email("Invalid test recipient email address")
 });
 
 export const testEmailSettings = async (req, res) => {
@@ -115,7 +120,10 @@ export const testEmailSettings = async (req, res) => {
 
     const parsed = emailTestSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: "Invalid payload data", details: parsed.error.format() });
+      const issue = parsed.error.issues?.[0];
+      const field = issue?.path?.join('.') || 'Form';
+      const errMsg = issue?.message ? `${field}: ${issue.message}` : "Invalid payload data";
+      return res.status(400).json({ error: errMsg, details: parsed.error.format() });
     }
 
     const data = parsed.data;
@@ -138,6 +146,9 @@ export const testEmailSettings = async (req, res) => {
       host: data.host,
       port: data.port,
       secure: data.secure,
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 15000,
       auth: {
         user: data.user,
         pass: finalPass
@@ -148,19 +159,21 @@ export const testEmailSettings = async (req, res) => {
       await transporter.verify();
     } catch (verifyError) {
       console.error("[SMTP TEST VERIFY ERROR]:", verifyError);
+      const errorMsg = verifyError?.message || "Unable to connect to the configured SMTP server.";
       return res.status(400).json({ 
-        error: "Failed to connect to SMTP server. Please check host, port, secure settings, and credentials.", 
-        details: "Unable to connect to the configured SMTP server." 
+        error: `SMTP Connection Failed: ${errorMsg}`, 
+        details: errorMsg 
       });
     }
 
-    const fromAddress = `"${data.fromName}" <${data.fromEmail}>`;
+    const senderEmail = data.fromEmail || (data.user.includes('@') ? data.user : (process.env.SMTP_FROM || 'recruitment@hackclubvit.co'));
+    const fromAddress = `"${data.fromName || 'HC Recruitment'}" <${senderEmail}>`;
     try {
       await transporter.sendMail({
         from: fromAddress,
         to: data.testRecipient,
         subject: "HackClub VIT Recruitment - Test Email",
-        html: `<h2>SMTP Test Successful</h2><p>If you are receiving this email, your SMTP configuration is correct.</p>`
+        html: `<h2>SMTP Test Successful</h2><p>If you are receiving this email, your SMTP configuration is correct and ready for recruitment notifications.</p>`
       });
       
       await logAudit(session.id, "TEST_SMTP_EMAIL", "Settings", data.testRecipient);
@@ -168,9 +181,10 @@ export const testEmailSettings = async (req, res) => {
       return res.status(200).json({ message: "Test email sent successfully!" });
     } catch (sendError) {
       console.error("[SMTP TEST SEND ERROR]:", sendError);
+      const errorMsg = sendError?.message || "Test email could not be sent.";
       return res.status(400).json({ 
-        error: "SMTP connection succeeded, but failed to send the email.", 
-        details: "Test email could not be sent. Check the SMTP configuration." 
+        error: `Failed to send email: ${errorMsg}`, 
+        details: errorMsg 
       });
     }
 

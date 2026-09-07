@@ -17,19 +17,27 @@ export const encryptPassword = (text) => {
   
   const authTag = cipher.getAuthTag().toString('hex');
   
-  return Buffer.from(`${iv.toString('hex')}:${authTag}:${encrypted}`).toString('base64');
+  return Buffer.from(`ENC:${iv.toString('hex')}:${authTag}:${encrypted}`).toString('base64');
 };
 
 export const decryptPassword = (payload) => {
-  if (!payload || !payload.includes('=')) {
+  if (!payload || typeof payload !== 'string') {
     return payload;
   }
   
   try {
     const decoded = Buffer.from(payload, 'base64').toString('utf8');
-    const [ivHex, authTagHex, encryptedHex] = decoded.split(':');
+    const parts = decoded.split(':');
     
-    if (!ivHex || !authTagHex || !encryptedHex) {
+    let ivHex, authTagHex, encryptedHex;
+    
+    if (parts[0] === 'ENC' && parts.length === 4) {
+      [, ivHex, authTagHex, encryptedHex] = parts;
+    } else if (parts.length === 3 && parts[0].length === 32 && parts[1].length === 32) {
+      // Backward-compatibility for legacy format without ENC: prefix
+      [ivHex, authTagHex, encryptedHex] = parts;
+    } else {
+      // Plain text password
       return payload;
     }
     
@@ -44,7 +52,7 @@ export const decryptPassword = (payload) => {
     
     return decrypted;
   } catch (error) {
-    console.error('[ENCRYPTION ERROR] Failed to decrypt password:', error);
-    return '';
+    // If decryption fails, payload might be stored in plain text
+    return payload;
   }
 };
