@@ -90,6 +90,7 @@ router.get('/panels/dashboard', panelsHandler.getPanelDashboard);
 
 // Interviews
 router.get('/interviews', interviewsHandler.getInterviews);
+router.get('/interviews/export', interviewsHandler.exportInterviewsCsv);
 router.post('/interviews/schedule', interviewsHandler.scheduleInterview);
 router.get('/interviews/:id', interviewsHandler.getInterviewById);
 router.put('/interviews/:id', interviewsHandler.updateInterview);

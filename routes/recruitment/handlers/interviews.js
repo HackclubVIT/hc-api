@@ -3,7 +3,7 @@ import { getSession } from "../lib/auth.js";
 import { logAudit } from "../lib/audit.js";
 import { createNotification } from "../lib/notify.js";
 import { sendEmail, templates } from "../lib/email.js";
-import { parseISTDateToUTC } from "../lib/timezone.js";
+import { parseISTDateToUTC, getISTDateBounds, toISTDateString, toISTTimeString } from "../lib/timezone.js";
 import { z } from "zod";
 
 const VALID_INTERVIEW_STATUSES = ["SCHEDULED", "IN_PROGRESS", "COMPLETED", "CANCELLED", "FEEDBACK_PENDING", "FEEDBACK_SUBMITTED"];
@@ -34,8 +34,12 @@ export const getInterviews = async (req, res) => {
 
     const searchParams = new URLSearchParams(req.query);
     const page = Math.max(1, parseInt(searchParams.get("page") || "1") || 1);
-    const limit = Math.min(100, Math.max(1, parseInt(searchParams.get("limit") || "100") || 100));
+    const limit = Math.min(200, Math.max(1, parseInt(searchParams.get("limit") || "100") || 100));
     const skip = (page - 1) * limit;
+
+    const dateParam = searchParams.get("date");
+    const panelIdParam = searchParams.get("panel_id");
+    const statusParam = searchParams.get("status");
 
     let whereClause = {};
 
@@ -53,8 +57,41 @@ export const getInterviews = async (req, res) => {
       };
     }
 
+    if (dateParam) {
+      const { startOfDay, endOfDay } = getISTDateBounds(dateParam);
+      whereClause.date = {
+        gte: startOfDay,
+        lte: endOfDay
+      };
+    }
+
+    if (panelIdParam && !isNaN(parseInt(panelIdParam, 10))) {
+      whereClause.panel_id = parseInt(panelIdParam, 10);
+    }
+
+    if (statusParam && statusParam !== "ALL") {
+      whereClause.status = statusParam;
+    }
+
     const includeClause = {
-      panel: true,
+      panel: {
+        include: {
+          members: {
+            include: {
+              user: {
+                select: { id: true, name: true, email: true }
+              }
+            }
+          }
+        }
+      },
+      assigned_members: {
+        include: {
+          user: {
+            select: { id: true, name: true, email: true }
+          }
+        }
+      }
     };
 
     if (session.role === "PANEL_MEMBER") {
@@ -75,7 +112,7 @@ export const getInterviews = async (req, res) => {
       prisma.recruitmentInterview.findMany({
         where: whereClause,
         include: includeClause,
-        orderBy: { date: 'asc' },
+        orderBy: [{ date: 'asc' }, { start_time: 'asc' }],
         skip,
         take: limit
       }),
@@ -87,6 +124,14 @@ export const getInterviews = async (req, res) => {
         ...i,
         application_id: i.application_id.toString(),
         recruiter_id: i.recruiter_id ? i.recruiter_id.toString() : null,
+        assigned_members: (i.assigned_members || []).map(m => ({
+          ...m,
+          user_id: m.user_id ? m.user_id.toString() : null,
+          user: m.user ? {
+            ...m.user,
+            id: m.user.id ? m.user.id.toString() : undefined
+          } : null
+        }))
       };
       if (interview.application) {
          interview.application = {
@@ -108,6 +153,128 @@ export const getInterviews = async (req, res) => {
   } catch (error) {
     console.error("Error fetching interviews:", error);
     return res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+export const exportInterviewsCsv = async (req, res) => {
+  try {
+    const session = await getSession(req);
+    if (!session || (session.role !== "ADMIN" && session.role !== "RECRUITER")) {
+      return res.status(403).json({ error: "Forbidden: insufficient permissions to export" });
+    }
+
+    const searchParams = new URLSearchParams(req.query);
+    const dateParam = searchParams.get("date");
+    const panelIdParam = searchParams.get("panel_id");
+    const statusParam = searchParams.get("status");
+
+    let whereClause = {};
+
+    if (session.role === "RECRUITER") {
+      whereClause = {
+        application: {
+          domain: { in: session.departments }
+        }
+      };
+    }
+
+    if (dateParam) {
+      const { startOfDay, endOfDay } = getISTDateBounds(dateParam);
+      whereClause.date = {
+        gte: startOfDay,
+        lte: endOfDay
+      };
+    }
+
+    if (panelIdParam && !isNaN(parseInt(panelIdParam, 10))) {
+      whereClause.panel_id = parseInt(panelIdParam, 10);
+    }
+
+    if (statusParam && statusParam !== "ALL") {
+      whereClause.status = statusParam;
+    }
+
+    const interviews = await prisma.recruitmentInterview.findMany({
+      where: whereClause,
+      include: {
+        panel: {
+          include: {
+            members: {
+              include: { user: { select: { name: true } } }
+            }
+          }
+        },
+        assigned_members: {
+          include: { user: { select: { name: true } } }
+        },
+        application: true
+      },
+      orderBy: [{ date: 'asc' }, { start_time: 'asc' }]
+    });
+
+    const headers = [
+      "Interview ID",
+      "Date (IST)",
+      "Time (IST)",
+      "Round",
+      "Candidate Name",
+      "Registration Number",
+      "Department",
+      "Email",
+      "Phone",
+      "Panel Name",
+      "Assigned Panelists",
+      "Status",
+      "Meeting Link",
+      "Portfolio / Resume"
+    ];
+
+    const escapeCsv = (str) => {
+      if (str === null || str === undefined) return '""';
+      const s = String(str).replace(/"/g, '""');
+      return `"${s}"`;
+    };
+
+    const rows = interviews.map((inv) => {
+      const dateStr = toISTDateString(inv.date);
+      const startTimeStr = toISTTimeString(inv.start_time);
+      const endTimeStr = toISTTimeString(inv.end_time);
+      const timeSlot = `${startTimeStr} - ${endTimeStr}`;
+      
+      const panelMembers = (inv.assigned_members && inv.assigned_members.length > 0)
+        ? inv.assigned_members.map(m => m.user?.name).filter(Boolean).join(", ")
+        : (inv.panel?.members ? inv.panel.members.map(m => m.user?.name).filter(Boolean).join(", ") : "");
+
+      return [
+        escapeCsv(inv.id),
+        escapeCsv(dateStr),
+        escapeCsv(timeSlot),
+        escapeCsv(`Round ${inv.round}`),
+        escapeCsv(inv.application?.name || "N/A"),
+        escapeCsv(inv.application?.registerNumber || "N/A"),
+        escapeCsv(inv.application?.domain || "N/A"),
+        escapeCsv(inv.application?.email || "N/A"),
+        escapeCsv(inv.application?.phoneNumber || "N/A"),
+        escapeCsv(inv.panel?.name || "N/A"),
+        escapeCsv(panelMembers || "N/A"),
+        escapeCsv(inv.status),
+        escapeCsv(inv.meeting_link || ""),
+        escapeCsv(inv.application?.portfolio || "")
+      ].join(",");
+    });
+
+    const csvContent = "\uFEFF" + [headers.join(","), ...rows].join("\r\n");
+
+    const dateSlug = dateParam || "all-dates";
+    const panelSlug = panelIdParam ? `panel-${panelIdParam}` : "all-panels";
+    const filename = `interviews-${dateSlug}-${panelSlug}.csv`;
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    return res.status(200).send(csvContent);
+  } catch (error) {
+    console.error("Export interviews CSV error:", error);
+    return res.status(500).json({ error: "Failed to export interviews" });
   }
 };
 
