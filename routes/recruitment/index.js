@@ -47,6 +47,7 @@ router.get('/auth/me', authHandler.me);
 
 // Users
 router.get('/users', usersHandler.getUsers);
+router.post('/users', usersHandler.createUser);
 router.put('/users', usersHandler.updateUser);
 router.delete('/users', usersHandler.deleteUser);
 
