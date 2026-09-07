@@ -44,10 +44,22 @@ export const getInterviews = async (req, res) => {
     let whereClause = {};
 
     if (session.role === "PANEL_MEMBER") {
+      const userId = BigInt(session.id);
       whereClause = {
-        assigned_members: {
-          some: { user_id: BigInt(session.id) }
-        }
+        OR: [
+          {
+            assigned_members: {
+              some: { user_id: userId }
+            }
+          },
+          {
+            panel: {
+              members: {
+                some: { user_id: userId, active: true }
+              }
+            }
+          }
+        ]
       };
     } else if (session.role === "RECRUITER") {
       whereClause = {
@@ -323,7 +335,7 @@ export const scheduleInterview = async (req, res) => {
 
     const panel = await prisma.recruitmentPanel.findUnique({ 
       where: { id: panel_id },
-      include: { members: { where: { active: true, user: { status: "Active" } }, include: { user: true } } }
+      include: { members: { where: { active: true }, include: { user: true } } }
     });
     if (!panel) {
       return res.status(404).json({ error: "Panel not found" });
@@ -488,7 +500,8 @@ export const getInterviewById = async (req, res) => {
           name: true,
           email: true,
           domain: true,
-          registerNumber: true
+          registerNumber: true,
+          portfolio: true
         }
       };
     }
@@ -501,7 +514,8 @@ export const getInterviewById = async (req, res) => {
     if (!interview) return res.status(404).json({ error: "Not found" });
 
     if (session.role === "PANEL_MEMBER") {
-      const isMember = interview.assigned_members.some(m => m.user_id.toString() === session.id);
+      const isMember = interview.assigned_members?.some(m => m.user_id.toString() === session.id) ||
+                       interview.panel?.members?.some(m => m.user_id.toString() === session.id && m.active);
       if (!isMember) return res.status(403).json({ error: "Forbidden" });
     } else if (session.role === "RECRUITER") {
       if (!session.departments.includes(interview.application?.domain)) {
@@ -510,7 +524,13 @@ export const getInterviewById = async (req, res) => {
     }
 
     if (session.role === "PANEL_MEMBER") {
-      delete interview.panel;
+      if (interview.panel) {
+        interview.panel = {
+          id: interview.panel.id,
+          name: interview.panel.name,
+          description: interview.panel.description
+        };
+      }
     }
 
     const formattedInterview = {
@@ -577,7 +597,8 @@ export const updateInterview = async (req, res) => {
     }
 
     if (session.role === "PANEL_MEMBER") {
-      const isMember = existingInterview.assigned_members.some(m => m.user_id.toString() === session.id);
+      const isMember = existingInterview.assigned_members?.some(m => m.user_id.toString() === session.id) ||
+                       existingInterview.panel?.members?.some(m => m.user_id.toString() === session.id && m.active);
       if (!isMember) {
         return res.status(403).json({ error: "Forbidden: Not an active member of this interview panel" });
       }

@@ -64,12 +64,14 @@ export const getCandidates = async (req, res) => {
         andConditions.push(buildDepartmentCondition(session.departments));
       }
     } else if (session.role === "PANEL_MEMBER") {
+      const userId = BigInt(session.id);
       andConditions.push({
         interviews: {
           some: {
-            assigned_members: {
-              some: { user_id: BigInt(session.id) }
-            }
+            OR: [
+              { assigned_members: { some: { user_id: userId } } },
+              { panel: { members: { some: { user_id: userId, active: true } } } }
+            ]
           }
         }
       });
@@ -100,10 +102,14 @@ export const getCandidates = async (req, res) => {
     };
 
     if (session.role === "PANEL_MEMBER") {
+      const userId = BigInt(session.id);
       includeClause = {
         interviews: {
           where: {
-            assigned_members: { some: { user_id: BigInt(session.id) } }
+            OR: [
+              { assigned_members: { some: { user_id: userId } } },
+              { panel: { members: { some: { user_id: userId, active: true } } } }
+            ]
           }
         }
       };
@@ -165,10 +171,14 @@ export const getCandidateById = async (req, res) => {
     };
 
     if (session.role === "PANEL_MEMBER") {
+      const userId = BigInt(session.id);
       includeClause = {
         interviews: {
           where: {
-            assigned_members: { some: { user_id: BigInt(session.id) } }
+            OR: [
+              { assigned_members: { some: { user_id: userId } } },
+              { panel: { members: { some: { user_id: userId, active: true } } } }
+            ]
           },
           include: { feedback: true }
         }

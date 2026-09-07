@@ -218,6 +218,26 @@ export const addPanelMember = async (req, res) => {
 
     await logAudit(session.id, "ADDED_PANEL_MEMBER", "PanelMember", member.id.toString());
 
+    // Sync upcoming/active interviews for this panel so assigned_members is populated
+    try {
+      const activeInterviews = await prisma.recruitmentInterview.findMany({
+        where: { panel_id, status: { in: ["SCHEDULED", "IN_PROGRESS", "FEEDBACK_PENDING"] } },
+        select: { id: true }
+      });
+      for (const inv of activeInterviews) {
+        await prisma.recruitmentInterview.update({
+          where: { id: inv.id },
+          data: {
+            assigned_members: {
+              connect: { id: member.id }
+            }
+          }
+        });
+      }
+    } catch (syncErr) {
+      console.error("Failed to sync interview assigned_members:", syncErr);
+    }
+
     return res.status(201).json({ member: { ...member, user_id: member.user_id.toString() } });
   } catch (error) {
     console.error("Add panel member error:", error);
@@ -258,6 +278,26 @@ export const removePanelMember = async (req, res) => {
       data: { active: false }
     });
 
+    // Disconnect removed member from upcoming scheduled interviews
+    try {
+      const scheduledInterviews = await prisma.recruitmentInterview.findMany({
+        where: { panel_id, status: "SCHEDULED" },
+        select: { id: true }
+      });
+      for (const inv of scheduledInterviews) {
+        await prisma.recruitmentInterview.update({
+          where: { id: inv.id },
+          data: {
+            assigned_members: {
+              disconnect: { id: member.id }
+            }
+          }
+        });
+      }
+    } catch (syncErr) {
+      console.error("Failed to disconnect interview assigned_members:", syncErr);
+    }
+
     await logAudit(session.id, "REMOVED_PANEL_MEMBER", "PanelMember", member.id.toString());
 
     return res.status(200).json({ message: "Member removed" });
@@ -274,7 +314,15 @@ export const getPanelDashboard = async (req, res) => {
       return res.status(403).json({ error: "Forbidden" });
     }
 
+    const userId = BigInt(session.id);
     const { startOfDay: startOfToday, endOfDay: endOfToday, endOfWeek } = getISTDateBounds();
+
+    const panelCondition = {
+      OR: [
+        { assigned_members: { some: { user_id: userId } } },
+        { panel: { members: { some: { user_id: userId, active: true } } } }
+      ]
+    };
 
     const todayInterviewsCount = await prisma.recruitmentInterview.count({
       where: {
@@ -283,9 +331,7 @@ export const getPanelDashboard = async (req, res) => {
           lte: endOfToday
         },
         status: { not: "CANCELLED" },
-        assigned_members: {
-          some: { user_id: BigInt(session.id) }
-        }
+        ...panelCondition
       }
     });
 
@@ -296,23 +342,19 @@ export const getPanelDashboard = async (req, res) => {
           lte: endOfWeek
         },
         status: { not: "CANCELLED" },
-        assigned_members: {
-          some: { user_id: BigInt(session.id) }
-        }
+        ...panelCondition
       }
     });
 
     const panelMemberRows = await prisma.recruitmentPanelMember.findMany({
-      where: { user_id: BigInt(session.id) }
+      where: { user_id: userId }
     });
     const panelMemberIds = panelMemberRows.map(pm => pm.id);
 
     const pendingFeedbackCount = await prisma.recruitmentInterview.count({
       where: {
         status: { in: ["COMPLETED", "FEEDBACK_PENDING"] },
-        assigned_members: {
-          some: { user_id: BigInt(session.id) }
-        },
+        ...panelCondition,
         NOT: {
           feedback: {
             some: {
@@ -330,11 +372,12 @@ export const getPanelDashboard = async (req, res) => {
           lte: endOfToday
         },
         status: { not: "CANCELLED" },
-        assigned_members: {
-          some: { user_id: BigInt(session.id) }
-        }
+        ...panelCondition
       },
       include: {
+        panel: {
+          select: { id: true, name: true }
+        },
         application: {
           select: {
             id: true,
@@ -353,6 +396,7 @@ export const getPanelDashboard = async (req, res) => {
     const mappedSchedule = todaySchedule.map(i => ({
       ...i,
       application_id: i.application_id.toString(),
+      panel: i.panel ? { id: i.panel.id, name: i.panel.name } : undefined,
       candidate: i.application ? {
         id: i.application.id.toString(),
         name: i.application.name,
