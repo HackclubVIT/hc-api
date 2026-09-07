@@ -19,17 +19,18 @@ import * as healthHandler from "./handlers/health.js";
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 15,
-  message: { error: 'Too many login attempts from this IP, please try again after 15 minutes.' },
+  max: 50,
+  message: { error: 'Too many login attempts from this network, please try again after 15 minutes.' },
   standardHeaders: true,
   legacyHeaders: false,
   skip: () => process.env.NODE_ENV !== 'production' && process.env.DEV_AUTH_BYPASS === 'true',
 });
 
 const submissionLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  max: 5,
-  message: { error: 'Too many applications submitted from this IP, please try again after an hour.' },
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  skipFailedRequests: true,
+  message: { error: 'Too many applications submitted from this network, please try again after 15 minutes.' },
   standardHeaders: true,
   legacyHeaders: false,
   skip: () => process.env.NODE_ENV !== 'production' && process.env.DEV_AUTH_BYPASS === 'true',

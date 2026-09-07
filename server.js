@@ -73,6 +73,7 @@ const transporter = nodemailer.createTransport({
 const JWT_SECRET = process.env.JWT_SECRET || 'HACKCLUB_VIT_SECRET_SESSION_TOKEN_KEY_2026';
 
 const app = express();
+app.set('trust proxy', 1);
 
 const defaultAllowedOrigins = [
   'http://localhost:3000',
