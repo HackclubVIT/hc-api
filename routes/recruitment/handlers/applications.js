@@ -7,15 +7,22 @@ import { sendEmail, templates } from "../lib/email.js";
 import { z } from "zod";
 
 const applicationSchema = z.object({
-  name: z.string().min(2),
-  email: z.string().email(),
-  phone: z.string().min(10),
-  department: z.string().min(2),
-  registration_number: z.string().min(4),
-  yearOfStudy: z.string().optional(),
-  resume_url: z.string().url().refine(val => val.startsWith('https://'), { message: "resume_url must use HTTPS protocol" }).optional().or(z.literal('')),
-  form_id: z.number().int().positive(),
-  answers: z.record(z.string(), z.union([z.string(), z.array(z.string())])).optional()
+  name: z.string().trim().min(2, "Name must be at least 2 characters"),
+  email: z.string().trim().email("Please provide a valid email address"),
+  phone: z.string().trim().min(7, "Please provide a valid phone number"),
+  department: z.string().trim().min(1, "Department is required"),
+  registration_number: z.string().trim().min(3, "Registration number is required"),
+  yearOfStudy: z.string().optional().nullable(),
+  resume_url: z.preprocess((val) => {
+    if (!val || typeof val !== "string" || !val.trim()) return "";
+    let trimmed = val.trim();
+    if (!/^https?:\/\//i.test(trimmed)) {
+      trimmed = `https://${trimmed}`;
+    }
+    return trimmed;
+  }, z.string().url("Please provide a valid URL").optional().or(z.literal(''))),
+  form_id: z.coerce.number().int().positive("Invalid form ID"),
+  answers: z.record(z.string(), z.any()).optional().default({})
 });
 
 export const createApplication = async (req, res) => {
@@ -24,7 +31,10 @@ export const createApplication = async (req, res) => {
     const parsed = applicationSchema.safeParse(body);
     
     if (!parsed.success) {
-      return res.status(400).json({ error: "Invalid form data", details: parsed.error.format() });
+      const issue = parsed.error.issues?.[0];
+      const field = issue?.path?.join('.') || 'Form';
+      const errMsg = issue?.message ? `${field}: ${issue.message}` : "Invalid form data";
+      return res.status(400).json({ error: errMsg, details: parsed.error.format() });
     }
 
     const data = parsed.data;
@@ -40,50 +50,60 @@ export const createApplication = async (req, res) => {
 
     const submittedAnswers = data.answers || {};
     
+    // Sanitize submitted answers: only keep keys that correspond to questions on this form
     const validQuestionIds = new Set(form.questions.map(q => q.id.toString()));
-    for (const key in submittedAnswers) {
-      if (!validQuestionIds.has(key)) {
-        return res.status(400).json({ error: `Unknown question ID submitted: ${key}` });
+    const sanitizedAnswers = {};
+    for (const [key, val] of Object.entries(submittedAnswers)) {
+      if (validQuestionIds.has(key.toString())) {
+        sanitizedAnswers[key.toString()] = val;
       }
     }
 
     for (const q of form.questions) {
-      const answer = submittedAnswers[q.id.toString()];
-      
-      if (q.required && (answer === undefined || answer === null || answer === "" || (Array.isArray(answer) && answer.length === 0))) {
+      const answer = sanitizedAnswers[q.id.toString()];
+      const isEmpty = answer === undefined || answer === null || answer === "" || (Array.isArray(answer) && answer.length === 0);
+
+      if (q.required && isEmpty) {
         return res.status(400).json({ error: `Question '${q.question}' is required.` });
       }
 
-      if (answer !== undefined && answer !== null && answer !== "") {
-        if ((q.type === 'RADIO' || q.type === 'DROPDOWN') && q.options.length > 0) {
-          if (!q.options.includes(String(answer))) {
+      if (!isEmpty && q.options && q.options.length > 0) {
+        const validOptions = q.options.map(o => String(o).trim());
+        if (q.type === 'RADIO' || q.type === 'DROPDOWN') {
+          const selected = String(answer).trim();
+          const matches = validOptions.some(o => o.toLowerCase() === selected.toLowerCase());
+          if (!matches && q.required) {
             return res.status(400).json({ error: `Invalid option selected for '${q.question}'.` });
           }
         }
-        if (q.type === 'CHECKBOX' && q.options.length > 0) {
+        if (q.type === 'CHECKBOX') {
           let selected = [];
-          if (Array.isArray(answer)) selected = answer;
+          if (Array.isArray(answer)) selected = answer.map(s => String(s).trim());
           else if (typeof answer === 'string') selected = answer.split(',').map(s => s.trim());
-          else selected = [String(answer)];
+          else selected = [String(answer).trim()];
           
-          for (const s of selected) {
-            if (!q.options.includes(s)) {
-              return res.status(400).json({ error: `Invalid option '${s}' selected for '${q.question}'.` });
-            }
+          const validSet = new Set(validOptions.map(o => o.toLowerCase()));
+          const invalid = selected.filter(s => s && !validSet.has(s.toLowerCase()));
+          if (invalid.length > 0 && q.required) {
+            return res.status(400).json({ error: `Invalid option '${invalid.join(", ")}' selected for '${q.question}'.` });
           }
         }
       }
     }
 
-    const existingUser = await prisma.user.findFirst({
-      where: {
-        email: data.email,
-        registerNumber: data.registration_number
-      }
-    });
-
-    if (!existingUser) {
-      return res.status(403).json({ error: "Identity mismatch or user not found. Ensure your email and registration number exactly match your Hack Club account." });
+    // Optional user lookup: applicants may or may not already have a user account
+    let existingUser = null;
+    try {
+      existingUser = await prisma.user.findFirst({
+        where: {
+          OR: [
+            { email: { equals: data.email.trim(), mode: "insensitive" } },
+            { registerNumber: { equals: data.registration_number.trim(), mode: "insensitive" } }
+          ]
+        }
+      });
+    } catch (e) {
+      console.warn("User lookup non-fatal error:", e);
     }
 
     const application = await prisma.$transaction(async (tx) => {
@@ -91,8 +111,8 @@ export const createApplication = async (req, res) => {
         where: {
           recruitmentId: "recruitment-2026",
           OR: [
-            { email: existingUser.email || data.email },
-            { registerNumber: existingUser.registerNumber || data.registration_number }
+            { email: { equals: data.email.trim(), mode: "insensitive" } },
+            { registerNumber: { equals: data.registration_number.trim(), mode: "insensitive" } }
           ]
         }
       });
@@ -107,14 +127,14 @@ export const createApplication = async (req, res) => {
         data: {
           id: newAppId,
           recruitmentId: "recruitment-2026",
-          name: existingUser.name,
-          email: existingUser.email || data.email,
-          phoneNumber: existingUser.phoneNumber || data.phone,
-          domain: existingUser.department || data.department,
-          registerNumber: existingUser.registerNumber || data.registration_number,
+          name: data.name || existingUser?.name || "Applicant",
+          email: data.email || existingUser?.email,
+          phoneNumber: data.phone || existingUser?.phoneNumber,
+          domain: data.department || existingUser?.department,
+          registerNumber: data.registration_number || existingUser?.registerNumber,
           portfolio: data.resume_url || null,
           yearOfStudy: data.yearOfStudy || (() => {
-            const regMatch = (existingUser.registerNumber || data.registration_number).match(/^(\d{2})/);
+            const regMatch = (data.registration_number || existingUser?.registerNumber || "").match(/^(\d{2})/);
             if (regMatch) {
               const startYear = 2000 + parseInt(regMatch[1], 10);
               const currentYear = new Date().getFullYear();
@@ -129,10 +149,14 @@ export const createApplication = async (req, res) => {
             create: {
               form_id: form.id,
               answers: {
-                create: form.questions.map(q => ({
-                  question_id: q.id,
-                  answer: String(data.answers?.[q.id] || "")
-                }))
+                create: form.questions.map(q => {
+                  const rawAns = sanitizedAnswers[q.id.toString()] ?? "";
+                  const ansStr = Array.isArray(rawAns) ? rawAns.join(", ") : String(rawAns);
+                  return {
+                    question_id: q.id,
+                    answer: ansStr
+                  };
+                })
               }
             }
           }
