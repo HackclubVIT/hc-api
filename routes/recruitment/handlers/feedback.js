@@ -112,12 +112,22 @@ export const submitFeedback = async (req, res) => {
       return res.status(400).json({ error: "Interview does not belong to a valid application." });
     }
 
-    if (interview.status === "SCHEDULED" || interview.status === "CANCELLED" || interview.status === "IN_PROGRESS") {
-      return res.status(400).json({ error: "Interview is not yet ready for feedback." });
+    if (interview.status === "CANCELLED") {
+      return res.status(400).json({ error: "Cannot submit feedback for a cancelled interview." });
     }
 
     if (interview.status === "FEEDBACK_SUBMITTED") {
       return res.status(409).json({ error: "All feedback has already been submitted for this interview." });
+    }
+
+    if (interview.status === "SCHEDULED") {
+      const now = new Date();
+      const hasStartedOrPast = now >= new Date(interview.start_time) || now >= new Date(interview.date);
+      if (!hasStartedOrPast) {
+        return res.status(400).json({ 
+          error: `Interview has not started yet. Scheduled for ${new Date(interview.start_time).toLocaleString("en-US", { timeZone: "Asia/Kolkata" })}.` 
+        });
+      }
     }
 
     const existingFeedback = await prisma.recruitmentFeedback.findFirst({
